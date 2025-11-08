@@ -11,3 +11,7 @@ speechrecognition>=3.9.0
 pyaudio>=0.2.13
 google-generativeai>=0.8.5
 pynput>=1.8.1
+
+# Added for FastAPI skeleton
+fastapi
+uvicorn[standard]
