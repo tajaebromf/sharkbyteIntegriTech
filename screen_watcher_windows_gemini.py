@@ -14,7 +14,7 @@ try: import speech_recognition as sr
 except Exception: sr = None
 
 # --- CONFIG ---
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\sanga\Tesseract\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 MODEL_VISION = "gemini-2.5-flash"
 MODEL_TEXT   = "gemini-2.5-flash"
 SCREEN_DOWNSCALE_MAX = 1600
@@ -134,21 +134,33 @@ def describe_screen():
         print("\n[Description]\n", result["description"])
 
 def define_word_under_mouse():
-    if state.paused: return print("[Paused]")
-    t=active_window_title()
-    if should_block_by_title(t): return print(f"[Privacy] {t}")
-    mx,my=current_mouse_pos; rw,rh=CURSOR_CROP; x,y=max(0,mx-rw//2),max(0,my-rh//2)
-    img=capture_region(x,y,rw,rh)
-    words=ocr_words_with_boxes(img)
-    if not words: return print("No words near cursor.")
-    w=nearest_word_to_point(words,rw//2,rh//2)
-    if not w: return print("No word found.")
-    try:
-        r=text.generate_content(f"Define '{w}' in one sentence plus 2 examples and 3 synonyms.")
-        out=sanitize_ascii(r.text)
-        print(f"\n[Definition: {w}]\n",out)
-        speak(f"Definition for {w}. {out}")
-    except Exception as e: print("[Gemini define]",e)
+    from utils.word_definer import WordDefiner, WordDefinerConfig
+    config = WordDefinerConfig(cursor_crop=CURSOR_CROP, ocr_lang=OCR_LANG, denylist_titles=DENYLIST_TITLES)
+    definer = WordDefiner(
+        text_generate=lambda x: text.generate_content(x),
+        capture_region=capture_region,
+        active_window_title=active_window_title,
+        speak=speak,
+        config=config
+    )
+    result = definer.define_word_at_point(
+        x=current_mouse_pos[0],
+        y=current_mouse_pos[1],
+        paused=state.paused
+    )
+    
+    if result["status"] == "paused":
+        print("[Paused]")
+    elif result["status"] == "blocked":
+        print(f"[Privacy] {result['title']}")
+    elif result["status"] == "no_words":
+        print("No words near cursor.")
+    elif result["status"] == "no_word":
+        print("No word found.")
+    elif result["status"] == "error":
+        print(f"[Gemini define] {result['error']}")
+    else:
+        print(f"\n[Definition: {result['word']}]\n", result["definition"])
 
 # --- VOICE DETECTION ---
 VOICE_HINT_I = re.compile(r"\bhey\s+gemini\b.*\bon\s+my\s+screen\b",re.I)

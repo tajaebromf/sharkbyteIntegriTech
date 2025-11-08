@@ -11,8 +11,9 @@ import google.generativeai as genai
 
 from utils.screen_describer import ScreenDescriber, ScreenConfig
 from screen_watcher_windows_gemini import (
-    active_window_title, speak,
-    MODEL_VISION, SCREEN_DOWNSCALE_MAX, DENYLIST_TITLES
+    active_window_title, speak, capture_region,
+    MODEL_VISION, MODEL_TEXT, SCREEN_DOWNSCALE_MAX,
+    DENYLIST_TITLES, CURSOR_CROP, OCR_LANG
 )
 
 # --- Gemini Setup ---
@@ -21,9 +22,10 @@ if not API_KEY:
     raise RuntimeError("Set GEMINI_API_KEY environment variable before running.")
 genai.configure(api_key=API_KEY)
 vision = genai.GenerativeModel(MODEL_VISION)
+text = genai.GenerativeModel(MODEL_TEXT)
 
-# --- Initialize Screen Describer ---
-config = ScreenConfig(
+# --- Initialize utilities ---
+screen_config = ScreenConfig(
     max_edge=SCREEN_DOWNSCALE_MAX,
     denylist_titles=DENYLIST_TITLES
 )
@@ -32,14 +34,33 @@ describer = ScreenDescriber(
     vision_generate=lambda x: vision.generate_content(x),
     active_window_title=active_window_title,
     speak=None,  # Disable TTS for API endpoints
-    config=config
+    config=screen_config
+)
+
+from utils.word_definer import WordDefiner, WordDefinerConfig
+word_config = WordDefinerConfig(
+    cursor_crop=CURSOR_CROP,
+    ocr_lang=OCR_LANG,
+    denylist_titles=DENYLIST_TITLES
+)
+
+definer = WordDefiner(
+    text_generate=lambda x: text.generate_content(x),
+    capture_region=capture_region,
+    active_window_title=active_window_title,
+    speak=None,  # Disable TTS for API endpoints
+    config=word_config
 )
 
 app = FastAPI(
     title="sharkbyteIntegriTech API",
-    description="A small FastAPI skeleton for the sharkbyteIntegriTech project.",
+    description="Screen description and analysis API with mouse tracking.",
     version="0.1.0",
 )
+
+# Mount the mouse tracker
+from utils.mouse_tracker import router as mouse_router
+app.mount("/mouse", mouse_router)
 
 
 class Item(BaseModel):
@@ -93,6 +114,63 @@ async def describe_screen(privacy_pause: bool = False):
     """
     try:
         return describer.describe(paused=privacy_pause)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/define", summary="Define word at screen coordinates")
+async def define_word(x: int, y: int, privacy_pause: bool = False, custom_prompt: str = None):
+    """
+    Find and define the word nearest to the given screen coordinates.
+    
+    Args:
+        x: Screen X coordinate
+        y: Screen Y coordinate
+        privacy_pause: If True, respect privacy pause state
+        custom_prompt: Optional custom prompt for word definition
+        
+    Returns:
+        Dict with word and definition info
+    """
+    try:
+        return definer.define_word_at_point(
+            x=x,
+            y=y,
+            paused=privacy_pause,
+            custom_prompt=custom_prompt
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/define/current", summary="Define word at current mouse position")
+async def define_word_at_mouse(privacy_pause: bool = False, custom_prompt: str = None):
+    """
+    Find and define the word nearest to the current mouse position.
+    Uses the mouse tracker service to get coordinates.
+    
+    Args:
+        privacy_pause: If True, respect privacy pause state
+        custom_prompt: Optional custom prompt for word definition
+        
+    Returns:
+        Dict with word and definition info, including mouse position
+    """
+    try:
+        # Get current mouse position from tracker
+        from utils.mouse_tracker import tracker
+        x, y = tracker.get_position()
+        
+        # Get definition
+        result = definer.define_word_at_point(
+            x=x,
+            y=y,
+            paused=privacy_pause,
+            custom_prompt=custom_prompt
+        )
+        
+        # Add mouse position to result
+        result["mouse_position"] = {"x": x, "y": y}
+        return result
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
