@@ -3,6 +3,7 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 import re
+import time
 
 import google.generativeai as genai
 from PIL import Image, ImageGrab
@@ -10,11 +11,16 @@ import mss
 import pytesseract
 from pynput import keyboard, mouse
 import win32com.client
-# If pythoncom isn't present, we'll handle it in speak()
 try:
-    import pythoncom  # for CoInitialize/CoUninitialize on listener threads
+    import pythoncom  # COM init for TTS on listener threads
 except Exception:
     pythoncom = None
+
+# === Optional voice input deps ===
+try:
+    import speech_recognition as sr
+except Exception:
+    sr = None  # fallback gracefully if not installed
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\sanga\Tesseract\tesseract.exe"
 
@@ -28,17 +34,22 @@ except Exception:
 MODEL_VISION = "gemini-2.5-flash"
 MODEL_TEXT   = "gemini-2.5-flash"
 
-SCREEN_DOWNSCALE_MAX = 1600          # downscale long edge to limit bandwidth
-CURSOR_CROP = (420, 240)             # region around cursor for OCR
+SCREEN_DOWNSCALE_MAX = 1600
+CURSOR_CROP = (420, 240)
 OCR_LANG = "eng"
 
-# Add window titles you never want to capture
 DENYLIST_TITLES = [
     "password", "bank", "1password", "lastpass", "bitwarden",
     "settings", "windows security", "microsoft account"
 ]
 
 PRIVACY_DEFAULT_PAUSED = False
+
+# Voice behavior
+VOICE_LISTEN_ON_HOTKEY = True             # hotkey triggers voice capture first
+VOICE_TIMEOUT = 5.0                        # seconds to start speech
+VOICE_PHRASE_TIME_LIMIT = 5.0              # max utterance length
+BYPASS_DOUBLE_TAP_WINDOW = 0.5             # seconds (double-tap Alt+key = instant action)
 
 # ---------------- STATE ----------------
 @dataclass
@@ -48,6 +59,7 @@ class State:
 state = State()
 current_mouse_pos = (0, 0)
 pressed_keys = set()
+last_hotkey_times = {"i": 0.0, "w": 0.0}
 
 # ---------------- LLM SETUP ----------------
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -74,7 +86,7 @@ def pil_to_bytes(img: Image.Image, fmt="JPEG", quality=85) -> bytes:
 
 def capture_fullscreen() -> Image.Image:
     with mss.mss() as sct:
-        monitor = sct.monitors[0]  # virtual full desktop
+        monitor = sct.monitors[0]
         raw = sct.grab(monitor)
         return Image.frombytes("RGB", (raw.width, raw.height), raw.rgb)
 
@@ -106,8 +118,8 @@ def speak(text: str, rate: int = 0, volume: int = 100):
         if pc:
             pc.CoInitialize()
         v = win32com.client.Dispatch("SAPI.SpVoice")
-        v.Rate = rate      # -10 (slow) to +10 (fast)
-        v.Volume = volume  # 0 to 100
+        v.Rate = rate
+        v.Volume = volume
         v.Speak(text)
     except Exception as e:
         print(f"[TTS error] {e}")
@@ -121,11 +133,9 @@ def speak(text: str, rate: int = 0, volume: int = 100):
 def extract_tldr(s: str) -> Optional[str]:
     if not s:
         return None
-    # Look for a TL;DR / TLDR line first
     m = re.search(r'(?im)^\s*tl;?\s*d\r?\s*r[:\-]?\s*(.+)$', s)
     if m:
         return m.group(1).strip()
-    # Fallback: last short non-empty line
     lines = [ln.strip() for ln in s.strip().splitlines() if ln.strip()]
     if lines:
         last = lines[-1]
@@ -161,6 +171,62 @@ def nearest_word_to_point(words: List[dict], px: int, py: int) -> Optional[str]:
             best, best_d2 = w, d2
     return best["text"] if best else None
 
+# ---------------- VOICE INPUT HELPERS ----------------
+VOICE_HINT_I = re.compile(
+    r"\bhey\s+gemini\b.*\b(what('?| i)s|whats)\b.*\bon\s+my\s+screen\b",
+    re.IGNORECASE
+)
+VOICE_HINT_W = re.compile(
+    r"\bhey\s+gemini\b.*\b(what('?| i)s|whats)\b.*\bword\b.*\bunder\b.*\b(mouse|cursor)\b",
+    re.IGNORECASE
+)
+
+def listen_and_transcribe(timeout: float, phrase_time_limit: float) -> Optional[str]:
+    if sr is None:
+        print("[Voice] speech_recognition not installed; skipping voice input.")
+        return None
+    try:
+        r = sr.Recognizer()
+        with sr.Microphone() as source:
+            r.adjust_for_ambient_noise(source, duration=0.3)
+            audio = r.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+        try:
+            text_result = r.recognize_google(audio)
+            return (text_result or "").strip()
+        except sr.UnknownValueError:
+            return None
+        except sr.RequestError as e:
+            print(f"[Voice] Recognition request error: {e}")
+            return None
+    except Exception as e:
+        print(f"[Voice] Error accessing microphone: {e}")
+        return None
+
+def ask_and_match(prompt_voice: str, matcher: re.Pattern) -> bool:
+    """
+    Speak a 'Listening...' cue, capture voice, check regex match.
+    Return True if matched phrase, False if not; None/False mean 'fallback/auto-run'.
+    """
+    try:
+        speak(prompt_voice, rate=0)
+    except Exception:
+        pass
+    said = listen_and_transcribe(VOICE_TIMEOUT, VOICE_PHRASE_TIME_LIMIT)
+    if said:
+        print(f"[Heard] {said}")
+        if matcher.search(said):
+            return True
+        else:
+            print("[Voice] Phrase didn’t match trigger.")
+            try:
+                speak("I didn't catch the trigger.", rate=0)
+            except Exception:
+                pass
+            return False
+    else:
+        print("[Voice] No speech detected (timeout).")
+        return False
+
 # ---------------- FEATURES ----------------
 def describe_screen():
     if state.paused:
@@ -192,12 +258,10 @@ def describe_screen():
         print(out)
         print("==========================\n")
 
-        # 🔊 Speak only the TL;DR (Alt+I behavior)
         tldr = extract_tldr(out)
         if tldr:
             speak("Summary. " + tldr, rate=0)
         else:
-            # Fallback: speak first ~200 chars
             speak("Summary. " + out[:200], rate=0)
 
     except Exception as e:
@@ -224,7 +288,6 @@ def define_word_under_mouse():
         print("Couldn't read text near the cursor.")
         return
 
-    # Point relative to crop center
     local_x = rw // 2
     local_y = rh // 2
     word = nearest_word_to_point(words, local_x, local_y)
@@ -244,7 +307,6 @@ def define_word_under_mouse():
         print(f"\n=== Definition: {word} ===")
         print(answer)
         print("===========================\n")
-        # 🔊 Speak the definition (Alt+W behavior)
         speak(f"Definition for {word}. {answer}", rate=0)
 
     except Exception as e:
@@ -263,29 +325,74 @@ def on_key_release(k):
     if k in pressed_keys:
         pressed_keys.remove(k)
 
-    # Check if Alt is down
+    # Modifier states
     alt_down = any(a in pressed_keys for a in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r))
+    shift_down = any(s in pressed_keys for s in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r))
+
+    # Helper: detect double-tap for bypass
+    def is_double_tap(key_char: str) -> bool:
+        now = time.time()
+        prev = last_hotkey_times.get(key_char, 0.0)
+        last_hotkey_times[key_char] = now
+        return (now - prev) <= BYPASS_DOUBLE_TAP_WINDOW
 
     if alt_down:
-        # Alt + i → describe (with TL;DR TTS)
+        # Alt + i
         if k == keyboard.KeyCode.from_char('i'):
-            describe_screen()
-        # Alt + w → define word at cursor (with TTS)
+            bypass = shift_down or is_double_tap('i')
+            if not VOICE_LISTEN_ON_HOTKEY or bypass or sr is None:
+                describe_screen()
+            else:
+                ok = ask_and_match(
+                    "Listening. Say: Hey Gemini, what's on my screen?",
+                    VOICE_HINT_I
+                )
+                # If matched OR timed-out/not matched, we still proceed to keep flow snappy
+                describe_screen()
+
+        # Alt + w
         elif k == keyboard.KeyCode.from_char('w'):
-            define_word_under_mouse()
+            bypass = shift_down or is_double_tap('w')
+            if not VOICE_LISTEN_ON_HOTKEY or bypass or sr is None:
+                define_word_under_mouse()
+            else:
+                ok = ask_and_match(
+                    "Listening. Say: Hey Gemini, what's the word under my mouse?",
+                    VOICE_HINT_W
+                )
+                define_word_under_mouse()
+
         # Alt + p → pause/resume
         elif k == keyboard.KeyCode.from_char('p'):
             state.paused = not state.paused
-            print(f"[Privacy] {'Paused' if state.paused else 'Resumed'}.")
+            msg = f"[Privacy] {'Paused' if state.paused else 'Resumed'}."
+            print(msg)
+            try:
+                speak("Privacy " + ("paused" if state.paused else "resumed"), rate=0)
+            except Exception:
+                pass
+
         # Alt + q → quit
         elif k == keyboard.KeyCode.from_char('q'):
             print("Quitting…")
+            try:
+                speak("Shutting down.", rate=0)
+            except Exception:
+                pass
             return False  # stop listener
 
 def main():
-    print("LLM Screen Watcher (Windows + Gemini)")
-    print("Hotkeys: Alt+I describe + speak TL;DR | Alt+W define + speak | Alt+P pause/resume | Alt+Q quit")
+    print("LLM Screen Watcher (Windows + Gemini + Voice Hotkeys)")
+    print("Hotkeys:")
+    print("  Alt+I → say:  'Hey Gemini, what's on my screen?'  (speaks TL;DR)")
+    print("         Bypass voice: Alt+Shift+I OR double-tap Alt+I")
+    print("  Alt+W → say:  'Hey Gemini, what's the word under my mouse?'  (speaks definition)")
+    print("         Bypass voice: Alt+Shift+W OR double-tap Alt+W")
+    print("  Alt+P → pause/resume   |   Alt+Q → quit")
     print("Make sure GEMINI_API_KEY is set. Keep this window open while running.\n")
+    if sr is None:
+        print("[Note] speech_recognition not installed — voice prompts will be skipped. Install with:")
+        print("       pip install SpeechRecognition pyaudio\n")
 
     m_listener = mouse.Listener(on_move=on_move)
     m_listener.start()
