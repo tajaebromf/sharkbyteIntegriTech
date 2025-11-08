@@ -1,183 +1,307 @@
-// (No Tampermonkey header here)
+// content.js
+// Minimal annotation UI + AI hookup
+// MV3 content script. Requires background.js and the updated manifest with host_permissions.
 
 // Wrap in an IIFE to avoid leaking globals
-(function () {
+(() => {
   if (window.__annotation_injected) return;
   window.__annotation_injected = true;
 
-  // If you’d rather store per path (more stable than full href):
-  // const keyForPage = () => `annotations|${location.origin}${location.pathname}`;
+  // ---------- Storage helpers ----------
   const keyForPage = () => `annotations|${location.href}`;
 
   function getAnnotations() {
     try {
-      return JSON.parse(localStorage.getItem(keyForPage()) || '[]');
+      return JSON.parse(localStorage.getItem(keyForPage()) || "[]");
     } catch (e) {
-      console.error('failed parse annotations', e);
+      console.error("[annotations] parse error", e);
       return [];
     }
   }
-  function saveAnnotation(a) {
-    const all = getAnnotations();
-    all.push(a);
-    localStorage.setItem(keyForPage(), JSON.stringify(all));
-    window.dispatchEvent(new Event('annotationsUpdated'));
+
+  function setAnnotations(all) {
+    try {
+      localStorage.setItem(keyForPage(), JSON.stringify(all));
+      window.dispatchEvent(new Event("annotationsUpdated"));
+    } catch (e) {
+      console.error("[annotations] set error", e);
+    }
   }
+
   function clearAnnotations() {
-    localStorage.removeItem(keyForPage());
-    window.dispatchEvent(new Event('annotationsUpdated'));
+    try {
+      localStorage.removeItem(keyForPage());
+      window.dispatchEvent(new Event("annotationsUpdated"));
+    } catch (e) {
+      console.error("[annotations] clear error", e);
+    }
   }
 
-  // --- styles
-  const style = document.createElement('style');
-  style.textContent = `
-    .annotation-sidebar { position: fixed; right: 0; top: 0; bottom: 0; width: 320px; background: #f7fafc; border-left: 1px solid #e2e8f0; padding: 12px; box-shadow: -4px 0 12px rgba(0,0,0,0.06); z-index: 2147483646; overflow: auto; font-family: system-ui, Arial; }
-    .annotation-toggle { position: fixed; right: 320px; top: 12px; z-index: 2147483647; }
-    .annotation-popup { position: absolute; background: white; border: 1px solid #e2e8f0; padding: 8px; border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.08); z-index: 2147483647; }
-    mark.annotation { background: #fffb8f; padding: 0 2px; border-radius: 2px; }
-    .annotation-highlight { box-shadow: 0 0 0 3px rgba(99,102,241,0.18); }
-    .annotation-item { background: white; padding: 8px; margin-bottom: 8px; border-radius: 6px; border: 1px solid #edf2f7; }
-    .annotation-empty { color: #718096; font-size: 13px; }
-  `;
-  document.head.appendChild(style);
+  // ---------- Utilities ----------
+  const escapeHtml = (s = "") =>
+    s
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
 
-  // --- sidebar
-  const sidebar = document.createElement('aside');
-  sidebar.className = 'annotation-sidebar';
-  sidebar.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <strong>Annotations</strong>
-      <button id="annotation-clear" style="color:#e53e3e;background:none;border:0;cursor:pointer">Clear</button>
-    </div>
-    <div id="annotation-list"></div>
-  `;
-  document.body.appendChild(sidebar);
-
-  // --- toggle
-  const toggle = document.createElement('button');
-  toggle.className = 'annotation-toggle';
-  toggle.textContent = 'Annotations';
-  toggle.onclick = () => {
-    sidebar.style.display = sidebar.style.display === 'none' ? 'block' : 'none';
-  };
-  document.body.appendChild(toggle);
-
-  // --- popup
-  const popup = document.createElement('div');
-  popup.className = 'annotation-popup';
-  popup.style.display = 'none';
-  popup.innerHTML = `
-    <div style="margin-bottom:6px"><textarea id="annotation-text" rows="3" style="width:240px"></textarea></div>
-    <div style="text-align:right"><button id="annotation-cancel" style="margin-right:8px">✖</button><button id="annotation-save">Save</button></div>
-  `;
-  document.body.appendChild(popup);
-
-  document.getElementById('annotation-clear').onclick = () => {
-    if (confirm('Clear all annotations for this page?')) {
-      clearAnnotations();
-      renderSidebar();
-      document.querySelectorAll('mark.annotation').forEach(m => {
-        const parent = m.parentNode;
-        parent.replaceChild(document.createTextNode(m.textContent), m);
-      });
+  function nowIso() {
+    try {
+      return new Date().toISOString();
+    } catch {
+      return String(Date.now());
     }
-  };
-
-  document.getElementById('annotation-cancel').onclick = () => {
-    popup.style.display = 'none';
-    currentSelection = null;
-  };
-
-  let currentSelection = null;
-
-  document.getElementById('annotation-save').onclick = () => {
-    const ta = document.getElementById('annotation-text');
-    const comment = ta.value.trim();
-    if (!currentSelection || !currentSelection.text) return;
-    saveAnnotation({ text: currentSelection.text, comment });
-    popup.style.display = 'none';
-    ta.value = '';
-    markText(currentSelection.text, getAnnotations().length - 1);
-    currentSelection = null;
-    renderSidebar();
-  };
-
-  function renderSidebar() {
-    const list = document.getElementById('annotation-list');
-    const annotations = getAnnotations();
-    list.innerHTML = '';
-    if (annotations.length === 0) {
-      const p = document.createElement('p');
-      p.className = 'annotation-empty';
-      p.textContent = 'No comments yet — select text to add one.';
-      list.appendChild(p);
-      return;
-    }
-    annotations.forEach((a, i) => {
-      const div = document.createElement('div'); div.className = 'annotation-item';
-      div.innerHTML = `<div style="font-style:italic;color:#4a5568;margin-bottom:6px">“${escapeHtml(a.text)}”</div><div>${escapeHtml(a.comment)}</div><div style="text-align:right;margin-top:6px"><button data-index="${i}" class="annotation-show">Show</button></div>`;
-      list.appendChild(div);
-    });
-    list.querySelectorAll('.annotation-show').forEach(btn => {
-      btn.onclick = () => {
-        const idx = btn.getAttribute('data-index');
-        const mark = document.querySelector(`mark.annotation[data-annotation-index="${idx}"]`);
-        if (mark) {
-          mark.scrollIntoView({ behavior:'smooth', block:'center' });
-          mark.classList.add('annotation-highlight');
-          setTimeout(()=>mark.classList.remove('annotation-highlight'), 2000);
-        }
-      };
-    });
   }
 
-  function escapeHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function getSelectionText() {
+    try {
+      return String(window.getSelection?.().toString() || "");
+    } catch {
+      return "";
+    }
+  }
 
-  function markText(text, index) {
-    if (!text || text.trim().length === 0) return false;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
-    let node;
-    const needle = text;
-    while (node = walker.nextNode()) {
-      const val = node.nodeValue;
-      const idx = val.indexOf(needle);
-      if (idx >= 0 && node.parentElement && node.parentElement.closest && !node.parentElement.closest('script,style,textarea')) {
-        const before = val.slice(0, idx);
-        const matched = val.slice(idx, idx + needle.length);
-        const after = val.slice(idx + needle.length);
-        const frag = document.createDocumentFragment();
-        if (before.length) frag.appendChild(document.createTextNode(before));
-        const mark = document.createElement('mark');
-        mark.className = 'annotation';
-        mark.setAttribute('data-annotation-index', String(index));
-        mark.textContent = matched;
-        frag.appendChild(mark);
-        if (after.length) frag.appendChild(document.createTextNode(after));
-        node.parentNode.replaceChild(frag, node);
-        return true;
+  // Ask background to screenshot + call backend, return {ok, result|error}
+  async function saveAnnotationAndAskAI({ comment, question, selectionText }) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          {
+            type: "SAVE_ANNOTATION_WITH_AI",
+            question: question ?? comment ?? "",
+            pageUrl: location.href,
+            selection: selectionText || ""
+          },
+          (resp) => {
+            // If the service worker slept, resp might be undefined on errors.
+            if (!resp) {
+              resolve({ ok: false, error: "No response from background." });
+            } else {
+              resolve(resp);
+            }
+          }
+        );
+      } catch (err) {
+        resolve({ ok: false, error: String(err) });
       }
-    }
-    return false;
+    });
   }
 
-  document.addEventListener('mouseup', () => {
-    const selection = window.getSelection();
-    if (!selection || selection.toString().trim().length === 0) return;
-    const anchor = selection.anchorNode;
-    if (!anchor || (anchor.nodeType === 3 && anchor.parentElement && anchor.parentElement.closest('.annotation-sidebar, .annotation-popup, .annotation-toggle'))) return;
-    const range = selection.getRangeAt(0);
-    const rect = range.getBoundingClientRect();
-    currentSelection = { text: selection.toString() };
-    popup.style.left = (rect.x + rect.width / 2 + window.scrollX) + 'px';
-    const py = rect.y - 40 + window.scrollY;
-    popup.style.top = (py < 8 ? rect.y + rect.height + 8 + window.scrollY : py) + 'px';
-    popup.style.display = 'block';
-    const ta = document.getElementById('annotation-text'); ta.value = '';
+  // Core save: persist locally immediately, then enrich with AI results
+  async function saveAnnotation(a) {
+    const all = getAnnotations();
+    const idx = all.length;
+
+    const record = {
+      id: crypto.randomUUID(),
+      pageUrl: location.href,
+      highlightedText: a.highlightedText || "",
+      comment: a.comment || "",
+      createdAt: nowIso(),
+      status: "processing", // processing | done | error
+      tldr: null,
+      answer: null,
+      error: null
+    };
+
+    all.push(record);
+    setAnnotations(all);
+
+    // Render immediately (optimistic)
+    renderList();
+
+    // Kick off AI call
+    const resp = await saveAnnotationAndAskAI({
+      comment: record.comment,
+      question: record.comment,
+      selectionText: record.highlightedText
+    });
+
+    const latest = getAnnotations();
+    const current = latest[idx];
+    if (!current) return; // page reload, etc.
+
+    if (!resp?.ok) {
+      current.status = "error";
+      current.error = resp?.error || "Unknown error from background/AI.";
+    } else {
+      const { tldr, answer } = resp.result || {};
+      current.status = "done";
+      current.tldr = tldr || "";
+      current.answer = answer || "";
+      current.error = null;
+    }
+    latest[idx] = current;
+    setAnnotations(latest);
+    renderList();
+  }
+
+  // ---------- UI injection ----------
+  const style = document.createElement("style");
+  style.textContent = `
+    .annotation-sidebar {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      width: 360px;
+      max-height: 85vh;
+      overflow: auto;
+      z-index: 2147483647;
+      background: #0b0b0bd9;
+      backdrop-filter: blur(6px);
+      color: #fff;
+      font: 13px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+      border: 1px solid #2a2a2a;
+      border-radius: 12px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.35);
+    }
+    .ann-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-bottom: 1px solid #222;
+    }
+    .ann-title { font-weight: 600; font-size: 14px; flex: 1; }
+    .ann-btn {
+      appearance: none; border: 1px solid #3a3a3a; background: #151515; color: #eee;
+      padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .ann-btn:hover { background:#1b1b1b; }
+    .ann-body { padding: 10px 12px; display: grid; gap: 8px; }
+    .ann-input, .ann-textarea {
+      width: 100%; border: 1px solid #333; background:#0e0e0e; color:#eee;
+      border-radius: 8px; padding: 8px 10px;
+    }
+    .ann-textarea { min-height: 64px; resize: vertical; }
+    .ann-list { display: grid; gap: 10px; margin-top: 6px; }
+    .ann-card {
+      border: 1px solid #272727; border-radius: 10px; background:#101010; padding: 8px 10px;
+    }
+    .ann-meta { opacity:.7; font-size: 12px; margin-bottom: 4px; }
+    .ann-hlt { background: #1d2a12; border: 1px solid #2e4b22; padding: 6px; border-radius: 6px; white-space: pre-wrap; }
+    .ann-comment { margin-top: 6px; white-space: pre-wrap; }
+    .ann-kv { margin-top: 6px; font-size: 12px; }
+    .ann-kv b { opacity:.9; }
+    .ann-status { font-size: 12px; opacity:.75; margin-top: 6px; }
+    .ann-hr { height:1px; background:#222; border:0; margin:8px 0; }
+    .ann-actions { display: flex; gap: 8px; }
+    .ann-danger { border-color:#643; background:#2a0f0f; }
+    .ann-danger:hover { background:#361212; }
+    .ann-footnote { opacity:.6; font-size:11px; }
+  `;
+  document.documentElement.appendChild(style);
+
+  const root = document.createElement("div");
+  root.className = "annotation-sidebar";
+  root.innerHTML = `
+    <div class="ann-head">
+      <div class="ann-title">Page Annotations</div>
+      <button class="ann-btn" id="ann-refresh">Refresh</button>
+      <button class="ann-btn ann-danger" id="ann-clear">Clear</button>
+    </div>
+    <div class="ann-body">
+      <div>
+        <div style="font-weight:600; margin-bottom:6px;">Selection (auto-filled)</div>
+        <textarea class="ann-textarea" id="ann-selection" placeholder="Select text on the page; this will capture automatically..."></textarea>
+      </div>
+      <div>
+        <div style="font-weight:600; margin-bottom:6px;">Comment / Question</div>
+        <textarea class="ann-textarea" id="ann-comment" placeholder="Ask a question or leave a note. This will be sent to AI with a screenshot."></textarea>
+      </div>
+      <div class="ann-actions">
+        <button class="ann-btn" id="ann-save">Save</button>
+      </div>
+      <hr class="ann-hr"/>
+      <div style="font-weight:600;">Saved</div>
+      <div class="ann-list" id="ann-list"></div>
+      <div class="ann-footnote">Tip: highlight text first, then write your question and click Save.</div>
+    </div>
+  `;
+  document.documentElement.appendChild(root);
+
+  // ---------- UI wiring ----------
+  const $ = (sel) => root.querySelector(sel);
+  const selEl = $("#ann-selection");
+  const commentEl = $("#ann-comment");
+  const listEl = $("#ann-list");
+
+  $("#ann-refresh").addEventListener("click", renderList);
+  $("#ann-clear").addEventListener("click", () => {
+    if (confirm("Clear all annotations for this page?")) {
+      clearAnnotations();
+      renderList();
+    }
   });
 
-  const annotations = getAnnotations();
-  annotations.forEach((a, i) => markText(a.text, i));
-  renderSidebar();
+  $("#ann-save").addEventListener("click", async () => {
+    const highlightedText = selEl.value.trim();
+    const comment = commentEl.value.trim();
 
-  window.addEventListener('annotationsUpdated', () => { renderSidebar(); });
+    if (!comment && !highlightedText) {
+      alert("Add a comment or highlight text before saving.");
+      return;
+    }
+
+    // Clear comment box after clicking save (optional)
+    // commentEl.value = "";
+
+    await saveAnnotation({
+      highlightedText,
+      comment
+    });
+  });
+
+  // Keep the selection box in sync when user selects text on page
+  document.addEventListener("selectionchange", () => {
+    const s = getSelectionText();
+    if (s) selEl.value = s;
+  });
+
+  // Re-render when storage changes (same page)
+  window.addEventListener("annotationsUpdated", () => renderList());
+
+  // ---------- Render ----------
+  function renderList() {
+    const data = getAnnotations();
+    listEl.innerHTML = "";
+    if (!data.length) {
+      listEl.innerHTML = `<div style="opacity:.7;">No annotations yet.</div>`;
+      return;
+    }
+
+    for (const ann of data) {
+      const hlt = ann.highlightedText ? `
+        <div class="ann-hlt"><b>Highlighted:</b>\n${escapeHtml(ann.highlightedText)}</div>
+      ` : "";
+
+      const tldrHtml = ann.tldr
+        ? `<div class="ann-kv"><b>TL;DR:</b> ${escapeHtml(ann.tldr)}</div>`
+        : "";
+
+      const answerHtml = ann.answer
+        ? `<div class="ann-kv"><b>Answer:</b> ${escapeHtml(ann.answer)}</div>`
+        : "";
+
+      const statusHtml =
+        ann.status === "processing"
+          ? `<div class="ann-status">⏳ Processing with AI…</div>`
+          : ann.status === "error"
+          ? `<div class="ann-status">❌ ${escapeHtml(ann.error || "Error")}</div>`
+          : "";
+
+      const card = document.createElement("div");
+      card.className = "ann-card";
+      card.innerHTML = `
+        <div class="ann-meta">${escapeHtml(ann.createdAt || "")}</div>
+        ${hlt}
+        <div class="ann-comment"><b>Comment:</b>\n${escapeHtml(ann.comment || "")}</div>
+        ${tldrHtml}
+        ${answerHtml}
+        ${statusHtml}
+      `;
+      listEl.appendChild(card);
+    }
+  }
+
+  // Initial render
+  renderList();
 })();

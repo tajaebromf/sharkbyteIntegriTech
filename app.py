@@ -8,12 +8,18 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import google.generativeai as genai
+from fastapi import Body
+from pydantic import BaseModel
+import base64
+from io import BytesIO
+from PIL import Image
 
 from utils.screen_describer import ScreenDescriber, ScreenConfig
 from screen_watcher_windows_gemini import (
     active_window_title, speak,
     MODEL_VISION, SCREEN_DOWNSCALE_MAX, DENYLIST_TITLES
 )
+
 
 # --- Gemini Setup ---
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -40,6 +46,35 @@ app = FastAPI(
     description="A small FastAPI skeleton for the sharkbyteIntegriTech project.",
     version="0.1.0",
 )
+
+class AnnotatePayload(BaseModel):
+    image_base64: str
+    question: str = ""
+    page_url: str = ""
+    selection: str = ""
+
+@app.post("/annotate", summary="Receive screenshot + question and return TL;DR & answer")
+async def annotate(payload: AnnotatePayload):
+    try:
+        # decode image
+        raw = base64.b64decode(payload.image_base64)
+        img = Image.open(BytesIO(raw)).convert("RGB")
+
+        # 1) Ask Gemini Vision for a concise TL;DR of the screen
+        tldr_prompt = "Give a concise TL;DR (1–2 sentences) of this screen."
+        tldr_resp = vision.generate_content([tldr_prompt, img])
+        tldr_text = (tldr_resp.text or "").strip()
+
+        # 2) If the user asked a question, ask Gemini using the same image for context
+        answer_text = ""
+        if payload.question:
+            qa_prompt = f"Answer this question using ONLY what is visible on the screen. Be concise:\n\nQ: {payload.question}"
+            qa_resp = vision.generate_content([qa_prompt, img])
+            answer_text = (qa_resp.text or "").strip()
+
+        return {"tldr": tldr_text, "answer": answer_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class Item(BaseModel):
