@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Page Annotations (MVP)",
+  "version": "0.1.0",
+  "description": "Minimal annotation UI: select text to add comments; stored per-page.",
+  "permissions": [],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

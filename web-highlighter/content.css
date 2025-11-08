@@ -1,0 +1,74 @@
+/* Highlight styling */
+.sb-highlight {
+  background: #fff59d;
+  padding: 0 2px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* Hover tooltip for quick peek */
+.sb-highlight[data-comment]:hover::after {
+  content: attr(data-comment);
+  position: absolute;
+  z-index: 2147483647;
+  background: #111;
+  color: #fff;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  max-width: 320px;
+  white-space: pre-wrap;
+  transform: translateY(-130%);
+  box-shadow: 0 6px 24px rgba(0,0,0,.25);
+}
+
+/* Inline “Add comment” bubble when selecting text */
+.sb-quick-add {
+  position: absolute;
+  z-index: 2147483646;
+  background: #111;
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.25);
+  user-select: none;
+}
+
+/* Modal */
+.sb-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.35);
+  z-index: 2147483646;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sb-modal {
+  width: min(520px, 92vw);
+  background: #fff;
+  color: #111;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 12px 48px rgba(0,0,0,.3);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+.sb-modal h3 { margin: 0 0 8px; font-size: 16px; }
+.sb-modal textarea {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  font-size: 14px;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+.sb-modal .row {
+  display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px;
+}
+.sb-btn {
+  border: none; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 14px;
+}
+.sb-btn.primary { background: #111; color: #fff; }
+.sb-btn.ghost { background: #f2f2f2; }
