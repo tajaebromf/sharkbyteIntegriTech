@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Web Highlighter & Comments",
+  "version": "1.0.0",
+  "description": "Highlight text on any webpage and attach comments. Press Alt+H to add a note; open the sidebar from the popup.",
+  "permissions": ["storage", "scripting", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Highlighter",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

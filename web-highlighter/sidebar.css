@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-bottom: 1px solid #e5e5e5;
+}
+#sb-close { border: none; background: transparent; font-size: 16px; cursor: pointer; }
+#sb-list { list-style: none; margin: 0; padding: 8px; display: grid; gap: 8px; }
+
+.note {
+  border: 1px solid #e5e5e5; border-radius: 12px; padding: 10px;
+  background: #fff;
+}
+.note .text {
+  font-size: 13px; color: #444; background: #fff59d; padding: 2px 4px; border-radius: 4px;
+}
+.note .comment { margin-top: 6px; font-size: 14px; color: #111; white-space: pre-wrap; }
+.note .meta { margin-top: 6px; font-size: 12px; color: #777; display: flex; gap: 10px; }
+.note .row { display: flex; gap: 8px; margin-top: 8px; }
+.note button {
+  border: none; border-radius: 8px; padding: 6px 8px; cursor: pointer; font-size: 12px;
+}
+.note button.jump { background: #111; color: #fff; }
+.note button.delete { background: #f2f2f2; }
+#sb-empty { padding: 12px; color: #666; font-size: 13px; }
