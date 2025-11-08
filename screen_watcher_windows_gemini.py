@@ -114,18 +114,24 @@ def extract_tldr(s):
     return lines[-1] if lines and len(lines[-1])<300 else None
 
 def describe_screen():
-    if state.paused: return print("[Paused]")
-    t=active_window_title()
-    if should_block_by_title(t): return print(f"[Privacy] {t}")
-    img=capture_fullscreen(); img=downscale(img,SCREEN_DOWNSCALE_MAX)
-    try:
-        r=vision.generate_content([
-            "Describe this screenshot briefly and finish with a TL;DR.",
-            {"mime_type":"image/jpeg","data":pil_to_bytes(img)}])
-        out=sanitize_ascii(r.text)
-        print("\n[Description]\n",out)
-        speak("Summary. "+(extract_tldr(out) or out[:150]))
-    except Exception as e: print("[Gemini describe]",e)
+    from utils.screen_describer import ScreenDescriber, ScreenConfig
+    config = ScreenConfig(max_edge=SCREEN_DOWNSCALE_MAX, denylist_titles=DENYLIST_TITLES)
+    describer = ScreenDescriber(
+        vision_generate=lambda x: vision.generate_content(x),
+        active_window_title=active_window_title,
+        speak=speak,
+        config=config
+    )
+    result = describer.describe(paused=state.paused)
+    
+    if result["status"] == "paused":
+        print("[Paused]")
+    elif result["status"] == "blocked":
+        print(f"[Privacy] {result['title']}")
+    elif result["status"] == "error":
+        print(f"[Gemini describe] {result['error']}")
+    else:
+        print("\n[Description]\n", result["description"])
 
 def define_word_under_mouse():
     if state.paused: return print("[Paused]")
