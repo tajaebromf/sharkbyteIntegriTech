@@ -14,7 +14,8 @@ Gemini API Key
    python -m pip install --upgrade pip; python -m pip install -r requirements.txt
 
 4) Initialize your Gemini Api Key using: 
-   $env:GEMINI_API_KEY =
+
+   $env:GEMINI_API_KEY =""
 
 6) Run the app with uvicorn:
 
