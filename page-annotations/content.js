@@ -44,6 +44,15 @@
     try { localStorage.setItem(MIN_KEY, on ? "1" : "0"); } catch {}
   }
 
+  // Theme preference storage (global, not per-page)
+  const THEME_KEY = "annotations|theme";
+  function getTheme() {
+    try { return localStorage.getItem(THEME_KEY) || "dark"; } catch { return "dark"; }
+  }
+  function setTheme(theme) {
+    try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  }
+
   // ---------- Utilities ----------
   const escapeHtml = (s = "") =>
     s
@@ -219,6 +228,128 @@
     .ann-danger { border-color:#643; background:#2a0f0f; }
     .ann-danger:hover { background:#361212; }
 
+    .ann-actions {display: flex; flex-direction: row; justify-content: left;}
+
+    /* Theme toggle switch */
+    .ann-theme-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .ann-theme-toggle-label {
+      font-size: 11px;
+      opacity: 0.8;
+      user-select: none;
+    }
+    .ann-theme-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #3a3a3a;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.3s ease;
+      border: 1px solid #2a2a2a;
+    }
+    .ann-theme-switch::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.3s ease;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    .ann-theme-switch.active {
+      background: #6b8e23;
+    }
+    .ann-theme-switch.active::before {
+      transform: translateX(20px);
+    }
+
+    /* Light mode theme styles */
+    .annotation-sidebar.light-mode {
+      background: rgba(250, 245, 235, 0.85);
+      color: #2c2c2c;
+      border: 1px solid rgba(200, 180, 150, 0.4);
+    }
+    .annotation-sidebar.light-mode .ann-head {
+      border-bottom: 1px solid rgba(200, 180, 150, 0.25);
+    }
+    .annotation-sidebar.light-mode .ann-title {
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-btn {
+      border: 1px solid rgba(200, 180, 150, 0.35);
+      background: rgba(240, 235, 225, 0.75);
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-btn:hover {
+      background: rgba(230, 225, 215, 0.85);
+    }
+    .annotation-sidebar.light-mode .ann-btn.ann-danger {
+      border-color: rgba(180, 100, 80, 0.4);
+      background: rgba(240, 220, 220, 0.75);
+      color: #8b3a3a;
+    }
+    .annotation-sidebar.light-mode .ann-btn.ann-danger:hover {
+      background: rgba(230, 210, 210, 0.85);
+    }
+    .annotation-sidebar.light-mode .ann-input,
+    .annotation-sidebar.light-mode .ann-textarea {
+      border: 1px solid rgba(200, 180, 150, 0.35);
+      background: rgba(255, 250, 240, 0.8);
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-card {
+      border: 1px solid rgba(200, 180, 150, 0.25);
+      background: rgba(255, 250, 240, 0.65);
+    }
+    .annotation-sidebar.light-mode .ann-meta {
+      color: #5a5a5a;
+    }
+    .annotation-sidebar.light-mode .ann-hlt {
+      background: rgba(220, 240, 200, 0.55);
+      border: 1px solid rgba(180, 200, 150, 0.4);
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-comment {
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-kv {
+      color: #3c3c3c;
+    }
+    .annotation-sidebar.light-mode .ann-status {
+      color: #5a5a5a;
+    }
+    .annotation-sidebar.light-mode .ann-hr {
+      background: rgba(200, 180, 150, 0.25);
+    }
+    .annotation-sidebar.light-mode .ann-fab {
+      border: 1px solid rgba(200, 180, 150, 0.35);
+      background: rgba(240, 235, 225, 0.85);
+    }
+    .annotation-sidebar.light-mode .ann-fab:hover {
+      background: rgba(230, 225, 215, 0.9);
+    }
+    .annotation-sidebar.light-mode .ann-fab[aria-pressed="true"] {
+      background: rgba(220, 215, 205, 0.85);
+    }
+    .annotation-sidebar.light-mode .ann-theme-toggle-label {
+      color: #2c2c2c;
+    }
+    .annotation-sidebar.light-mode .ann-theme-switch {
+      background: rgba(200, 180, 150, 0.35);
+      border: 1px solid rgba(180, 160, 130, 0.4);
+    }
+    .annotation-sidebar.light-mode .ann-theme-switch.active {
+      background: rgba(139, 154, 91, 0.85);
+    }
+
     /* Floating minimize / expand button (bottom-right) */
     .ann-fab {
       position: fixed;
@@ -254,26 +385,37 @@
   // Sidebar
   const root = document.createElement("div");
   root.className = "annotation-sidebar";
+  
+  // Apply initial theme
+  const currentTheme = getTheme();
+  if (currentTheme === "light") {
+    root.classList.add("light-mode");
+  }
+  
   root.innerHTML = `
     <div class="ann-head">
       <div class="ann-title">Browser Buddy</div>
-      <button class="ann-btn" id="ann-refresh">Refresh</button>
-      <button class="ann-btn ann-danger" id="ann-clear">Clear</button>
+      <div class="ann-theme-toggle">
+        <span class="ann-theme-toggle-label">Light</span>
+        <div class="ann-theme-switch" id="ann-theme-switch" role="switch" aria-checked="${currentTheme === "light"}"></div>
+      </div>
     </div>
     <div class="ann-body">
       <div>
-        <div style="font-weight:600; margin-bottom:6px;">Selection (auto-filled)</div>
-        <textarea class="ann-textarea" id="ann-selection" placeholder="Select text on the page; this will capture automatically..."></textarea>
+        <div style="font-weight:600; margin-bottom:6px;">Selection(auto-filled)</div>
+        <textarea class="ann-textarea" id="ann-selection" placeholder="Highlight text on the page; this will capture automatically and can be saved..."></textarea>
       </div>
       <div>
         <div style="font-weight:600; margin-bottom:6px;">Comment / Question</div>
-        <textarea class="ann-textarea" id="ann-comment" placeholder="Ask a question or leave a note. This will be sent to AI with a screenshot."></textarea>
-      </div>
-      <div class="ann-actions">
-        <button class="ann-btn" id="ann-save">Save</button>
+        <textarea class="ann-textarea" id="ann-comment" placeholder="Ask a question or leave a note on your selection. This will be sent to buddy for analysis with a screenshot!"></textarea>
+        <button class="ann-btn" id="ann-save">Submit</button>
       </div>
       <hr class="ann-hr"/>
       <div style="font-weight:600;">Saved</div>
+      <div class="ann-actions">
+      <button class="ann-btn" id="ann-refresh">Refresh</button>
+      <button class="ann-btn ann-danger" id="ann-clear">Clear</button>
+      </div>
       <div class="ann-list" id="ann-list"></div>
     </div>
   `;
@@ -364,6 +506,34 @@
   const selEl = $("#ann-selection");
   const commentEl = $("#ann-comment");
   const listEl = $("#ann-list");
+  const themeSwitch = $("#ann-theme-switch");
+
+  // Initialize theme switch state
+  if (currentTheme === "light") {
+    themeSwitch.classList.add("active");
+    themeSwitch.setAttribute("aria-checked", "true");
+  } else {
+    themeSwitch.classList.remove("active");
+    themeSwitch.setAttribute("aria-checked", "false");
+  }
+
+  // Theme toggle event handler
+  themeSwitch.addEventListener("click", () => {
+    const isLightMode = root.classList.contains("light-mode");
+    if (isLightMode) {
+      // Switch to dark mode
+      root.classList.remove("light-mode");
+      themeSwitch.classList.remove("active");
+      themeSwitch.setAttribute("aria-checked", "false");
+      setTheme("dark");
+    } else {
+      // Switch to light mode
+      root.classList.add("light-mode");
+      themeSwitch.classList.add("active");
+      themeSwitch.setAttribute("aria-checked", "true");
+      setTheme("light");
+    }
+  });
 
   $("#ann-refresh").addEventListener("click", renderList);
   $("#ann-clear").addEventListener("click", () => {

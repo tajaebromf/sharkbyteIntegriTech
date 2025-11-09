@@ -82,21 +82,44 @@ async def annotate(payload: AnnotatePayload):
         img = Image.open(BytesIO(raw)).convert("RGB")
 
         # 1) Ask Gemini Vision for a concise TL;DR of the screen
-        tldr_prompt = "Give a concise TL;DR (1–2 sentences) of this screen."
+        tldr_prompt = """Give a concise TL;DR (1-2 sentences) of the MAIN CONTENT on this webpage.
+
+CRITICAL RULES:
+- Focus ONLY on the primary webpage content (articles, documentation, main text)
+- IGNORE any sidebars, toolbars, extensions, or overlay UI elements on the right side
+- DO NOT mention annotation tools, browser extensions, or helper applications
+- Describe what the webpage is about, not what tools are being used to view it
+
+Example good output: "This is an MDN documentation page about getting started with React, covering prerequisites and setup instructions."
+Example bad output: "This screen shows an MDN page with a Browser Buddy tool..."
+
+TL;DR:"""
+
         tldr_resp = vision.generate_content([tldr_prompt, img])
         tldr_text = (tldr_resp.text or "").strip()
 
         # 2) If the user asked a question, ask Gemini using the same image for context
         answer_text = ""
         if payload.question:
-            qa_prompt = f"Answer this question using ONLY what is visible on the screen. Be concise:\n\nQ: {payload.question}"
+            qa_prompt = f"""Answer this question using ONLY the MAIN WEBPAGE CONTENT visible on screen.
+
+CRITICAL RULES:
+- Focus on the primary webpage content (center/left area)
+- IGNORE any sidebar tools, extensions, or UI overlays on the right
+- Answer from the perspective of a helpful assistant explaining the webpage content
+- Be educational and concise
+- DO NOT mention browser extensions, annotation tools, or sidebar UI
+- Have a friendly and engaging tone.
+- If the user's question is not answered by the webpage content, search the web for the answer while keeping the context in mind.
+USER'S QUESTION: {payload.question}
+
+ANSWER:"""
             qa_resp = vision.generate_content([qa_prompt, img])
             answer_text = (qa_resp.text or "").strip()
 
         return {"tldr": tldr_text, "answer": answer_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 class Item(BaseModel):
     name: str
@@ -139,7 +162,8 @@ async def create_item(item: Item):
 @app.get("/describe", summary="Describe current screen")
 async def describe_screen(privacy_pause: bool = False):
     """
-    Capture and describe the current screen using Gemini Vision.
+    Capture and describe the current screen using Gemini Vision. Ignore the page annotation app on the right side of the screen,
+    as well as any other apps in the toolbar on the bottom of the screen.
     
     Args:
         privacy_pause: If True, respect privacy pause state.
