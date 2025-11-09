@@ -27,5 +27,11 @@
   ],
   "action": {
     "default_title": "Page Annotations"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["images/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

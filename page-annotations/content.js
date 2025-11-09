@@ -62,6 +62,8 @@
   }
 
   // Ask background to screenshot + call backend, return {ok, result|error}
+  // This function sends a message to the background script which then takes a screenshot
+  // and sends it to the backend API for AI processing
   async function saveAnnotationAndAskAI({ comment, question, selectionText }) {
     return new Promise((resolve) => {
       try {
@@ -72,16 +74,38 @@
             pageUrl: location.href,
             selection: selectionText || ""
           },
-          (resp) => {
-            if (!resp) {
-              resolve({ ok: false, error: "No response from background." });
-            } else {
-              resolve(resp);
+          (response) => {
+            // Check if the extension context was invalidated (e.g., extension was reloaded)
+            if (chrome.runtime.lastError) {
+              const errorMessage = chrome.runtime.lastError.message;
+              if (errorMessage.includes("Extension context invalidated") || 
+                  errorMessage.includes("message port closed")) {
+                resolve({ 
+                  ok: false, 
+                  error: "Extension was reloaded. Please refresh this page to continue using annotations." 
+                });
+              } else {
+                resolve({ 
+                  ok: false, 
+                  error: `Extension error: ${errorMessage}` 
+                });
+              }
+              return;
             }
+            
+            // Check if we got a response
+            if (!response) {
+              resolve({ ok: false, error: "No response from background script." });
+              return;
+            }
+            
+            // Return the response from the background script
+            resolve(response);
           }
         );
-      } catch (err) {
-        resolve({ ok: false, error: String(err) });
+      } catch (error) {
+        // Catch any synchronous errors that might occur
+        resolve({ ok: false, error: `Failed to send message: ${String(error)}` });
       }
     });
   }
@@ -107,12 +131,18 @@
     setAnnotations(all);
     renderList();
 
+    // Show the "thinking" image while Gemini is processing the request
+    showThinkingState();
+
     // Kick off AI call
     const resp = await saveAnnotationAndAskAI({
       comment: record.comment,
       question: record.comment,
       selectionText: record.highlightedText
     });
+
+    // Restore the normal button image after AI processing completes
+    restoreNormalButtonState();
 
     const latest = getAnnotations();
     const current = latest[idx];
@@ -201,16 +231,23 @@
       border: 1px solid #2a2a2a;
       background: #111;
       color: #f6f6f6;
-      font-size: 20px;
+      padding: 8px;
       display: grid;
       place-items: center;
       cursor: pointer;
       box-shadow: 0 6px 20px rgba(0,0,0,.35);
       transition: transform .15s ease, background .15s ease;
+      overflow: hidden;
     }
     .ann-fab:hover { background:#181818; transform: translateY(-1px); }
     .ann-fab:active { transform: translateY(0); }
     .ann-fab[aria-pressed="true"] { background:#151515; }
+    .ann-fab img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
   `;
   document.documentElement.appendChild(style);
 
@@ -242,28 +279,85 @@
   `;
   document.documentElement.appendChild(root);
 
-  // Floating Action Button (minimize / expand)
-  const fab = document.createElement("button");
-  fab.className = "ann-fab";
-  fab.setAttribute("type", "button");
-  fab.setAttribute("title", "Toggle Annotations");
-  fab.setAttribute("aria-pressed", getMinimized() ? "true" : "false");
-  // Icons: ▣ (expand) / ▪ (min) – or use ▾/▴. We'll toggle dynamically.
-  fab.textContent = getMinimized() ? "▣" : "▪";
-  document.documentElement.appendChild(fab);
+  // Create the toggle button that appears in the bottom-right corner
+  // This button lets users minimize/expand the annotation sidebar
+  const toggleButton = document.createElement("button");
+  toggleButton.className = "ann-fab";
+  toggleButton.setAttribute("type", "button");
+  toggleButton.setAttribute("title", "Toggle Annotations");
+  toggleButton.setAttribute("aria-pressed", getMinimized() ? "true" : "false");
+  
+  // Create the image element that will display inside the toggle button
+  // This image changes based on whether the sidebar is minimized or expanded
+  const toggleButtonImage = document.createElement("img");
+  toggleButtonImage.alt = "Toggle Annotations";
+  
+  // Get the URL to the image file from the extension's resources
+  // chrome.runtime.getURL converts a relative path to a full extension URL
+  const imagePathWhenSidebarIsOpen = chrome.runtime.getURL("images/Sam-Speaks.png");
+  const imagePathWhenSidebarIsMinimized = chrome.runtime.getURL("images/Sam-Sleep.png");
+  const imagePathWhenThinking = chrome.runtime.getURL("images/Sam-thinks.png");
+  
+  // Log the image paths to help debug if images aren't loading
+  console.log("[Annotations] Image paths:", {
+    open: imagePathWhenSidebarIsOpen,
+    minimized: imagePathWhenSidebarIsMinimized,
+    thinking: imagePathWhenThinking
+  });
+  
+  // Set the initial image (when sidebar is open, show the "sleep" image)
+  toggleButtonImage.src = imagePathWhenSidebarIsOpen;
+  
+  // Verify the image loads successfully
+  toggleButtonImage.onload = function() {
+    console.log("[Annotations] Toggle button image loaded successfully:", this.src);
+  };
+  
+  // If image fails to load, log an error to help debug
+  toggleButtonImage.onerror = function() {
+    console.error("[Annotations] Failed to load toggle button image:", this.src);
+    console.error("[Annotations] Make sure the extension is reloaded and the image path is correct");
+  };
+  
+  // Add the image to the button, then add the button to the page
+  toggleButton.appendChild(toggleButtonImage);
+  document.documentElement.appendChild(toggleButton);
 
-  function applyMinimizedUI(min) {
-    if (min) {
+  // Function to update the UI when the sidebar is minimized or expanded
+  // This changes the sidebar visibility and updates the button's image
+  function updateSidebarMinimizedState(isMinimized) {
+    if (isMinimized) {
+      // Sidebar is minimized: hide it off-screen and show "speaks" image (user can click to expand)
       root.classList.add("ann-min");
-      fab.setAttribute("aria-pressed", "true");
-      fab.textContent = "▣"; // expand icon
+      toggleButton.setAttribute("aria-pressed", "true");
+      toggleButtonImage.src = imagePathWhenSidebarIsMinimized;
     } else {
+      // Sidebar is open: show it and display "sleep" image (user can click to minimize)
       root.classList.remove("ann-min");
-      fab.setAttribute("aria-pressed", "false");
-      fab.textContent = "▪"; // minimize icon
+      toggleButton.setAttribute("aria-pressed", "false");
+      toggleButtonImage.src = imagePathWhenSidebarIsOpen;
     }
   }
-  applyMinimizedUI(getMinimized());
+  
+  // Function to show the "thinking" image when AI is processing
+  // This is called when the user saves an annotation and Gemini is generating a response
+  function showThinkingState() {
+    toggleButtonImage.src = imagePathWhenThinking;
+  }
+  
+  // Function to restore the normal button image after AI processing completes
+  // This restores the image based on whether the sidebar is minimized or open
+  function restoreNormalButtonState() {
+    const isCurrentlyMinimized = getMinimized();
+    if (isCurrentlyMinimized) {
+      toggleButtonImage.src = imagePathWhenSidebarIsMinimized;
+    } else {
+      toggleButtonImage.src = imagePathWhenSidebarIsOpen;
+    }
+  }
+  
+  // Apply the current minimized state when the page loads
+  updateSidebarMinimizedState(getMinimized());
 
   // ---------- UI wiring ----------
   const $ = (sel) => root.querySelector(sel);
@@ -290,11 +384,11 @@
     await saveAnnotation({ highlightedText, comment });
   });
 
-  // Minimize/Expand toggle
-  fab.addEventListener("click", () => {
-    const next = !getMinimized();
-    setMinimized(next);
-    applyMinimizedUI(next);
+  // When user clicks the toggle button, flip the minimized state
+  toggleButton.addEventListener("click", () => {
+    const newMinimizedState = !getMinimized();
+    setMinimized(newMinimizedState);
+    updateSidebarMinimizedState(newMinimizedState);
   });
 
   // Keep the selection box in sync when user selects text on page
