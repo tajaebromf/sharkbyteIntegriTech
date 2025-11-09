@@ -1,14 +1,14 @@
 // content.js
-// Minimal annotation UI + AI hookup
-// MV3 content script. Requires background.js and the updated manifest with host_permissions.
+// Minimal annotation UI + AI hookup + Minimize toggle (bottom-right)
+// Requires: background.js (MV3) and updated manifest with host_permissions for your backend.
 
-// Wrap in an IIFE to avoid leaking globals
 (() => {
   if (window.__annotation_injected) return;
   window.__annotation_injected = true;
 
   // ---------- Storage helpers ----------
   const keyForPage = () => `annotations|${location.href}`;
+  const MIN_KEY = `annotations|minimized|${location.href}`;
 
   function getAnnotations() {
     try {
@@ -37,6 +37,13 @@
     }
   }
 
+  function getMinimized() {
+    try { return localStorage.getItem(MIN_KEY) === "1"; } catch { return false; }
+  }
+  function setMinimized(on) {
+    try { localStorage.setItem(MIN_KEY, on ? "1" : "0"); } catch {}
+  }
+
   // ---------- Utilities ----------
   const escapeHtml = (s = "") =>
     s
@@ -47,19 +54,11 @@
       .replaceAll("'", "&#039;");
 
   function nowIso() {
-    try {
-      return new Date().toISOString();
-    } catch {
-      return String(Date.now());
-    }
+    try { return new Date().toISOString(); } catch { return String(Date.now()); }
   }
 
   function getSelectionText() {
-    try {
-      return String(window.getSelection?.().toString() || "");
-    } catch {
-      return "";
-    }
+    try { return String(window.getSelection?.().toString() || ""); } catch { return ""; }
   }
 
   // Ask background to screenshot + call backend, return {ok, result|error}
@@ -74,7 +73,6 @@
             selection: selectionText || ""
           },
           (resp) => {
-            // If the service worker slept, resp might be undefined on errors.
             if (!resp) {
               resolve({ ok: false, error: "No response from background." });
             } else {
@@ -107,8 +105,6 @@
 
     all.push(record);
     setAnnotations(all);
-
-    // Render immediately (optimistic)
     renderList();
 
     // Kick off AI call
@@ -155,6 +151,12 @@
       border: 1px solid #2a2a2a;
       border-radius: 12px;
       box-shadow: 0 8px 28px rgba(0,0,0,.35);
+      transition: transform .25s ease, opacity .2s ease;
+    }
+    .annotation-sidebar.ann-min {
+      transform: translateX(calc(100% + 24px));
+      opacity: 0.6;
+      pointer-events: none; /* panel content not interactive when minimized */
     }
     .ann-head {
       display: flex; align-items: center; gap: 8px;
@@ -186,10 +188,33 @@
     .ann-actions { display: flex; gap: 8px; }
     .ann-danger { border-color:#643; background:#2a0f0f; }
     .ann-danger:hover { background:#361212; }
-    .ann-footnote { opacity:.6; font-size:11px; }
+
+    /* Floating minimize / expand button (bottom-right) */
+    .ann-fab {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      z-index: 2147483647;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      border: 1px solid #2a2a2a;
+      background: #111;
+      color: #f6f6f6;
+      font-size: 20px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      box-shadow: 0 6px 20px rgba(0,0,0,.35);
+      transition: transform .15s ease, background .15s ease;
+    }
+    .ann-fab:hover { background:#181818; transform: translateY(-1px); }
+    .ann-fab:active { transform: translateY(0); }
+    .ann-fab[aria-pressed="true"] { background:#151515; }
   `;
   document.documentElement.appendChild(style);
 
+  // Sidebar
   const root = document.createElement("div");
   root.className = "annotation-sidebar";
   root.innerHTML = `
@@ -213,10 +238,32 @@
       <hr class="ann-hr"/>
       <div style="font-weight:600;">Saved</div>
       <div class="ann-list" id="ann-list"></div>
-      <div class="ann-footnote">Tip: highlight text first, then write your question and click Save.</div>
     </div>
   `;
   document.documentElement.appendChild(root);
+
+  // Floating Action Button (minimize / expand)
+  const fab = document.createElement("button");
+  fab.className = "ann-fab";
+  fab.setAttribute("type", "button");
+  fab.setAttribute("title", "Toggle Annotations");
+  fab.setAttribute("aria-pressed", getMinimized() ? "true" : "false");
+  // Icons: ▣ (expand) / ▪ (min) – or use ▾/▴. We'll toggle dynamically.
+  fab.textContent = getMinimized() ? "▣" : "▪";
+  document.documentElement.appendChild(fab);
+
+  function applyMinimizedUI(min) {
+    if (min) {
+      root.classList.add("ann-min");
+      fab.setAttribute("aria-pressed", "true");
+      fab.textContent = "▣"; // expand icon
+    } else {
+      root.classList.remove("ann-min");
+      fab.setAttribute("aria-pressed", "false");
+      fab.textContent = "▪"; // minimize icon
+    }
+  }
+  applyMinimizedUI(getMinimized());
 
   // ---------- UI wiring ----------
   const $ = (sel) => root.querySelector(sel);
@@ -240,14 +287,14 @@
       alert("Add a comment or highlight text before saving.");
       return;
     }
+    await saveAnnotation({ highlightedText, comment });
+  });
 
-    // Clear comment box after clicking save (optional)
-    // commentEl.value = "";
-
-    await saveAnnotation({
-      highlightedText,
-      comment
-    });
+  // Minimize/Expand toggle
+  fab.addEventListener("click", () => {
+    const next = !getMinimized();
+    setMinimized(next);
+    applyMinimizedUI(next);
   });
 
   // Keep the selection box in sync when user selects text on page
