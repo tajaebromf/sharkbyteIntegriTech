@@ -256,7 +256,7 @@
   root.className = "annotation-sidebar";
   root.innerHTML = `
     <div class="ann-head">
-      <div class="ann-title">Page Annotations</div>
+      <div class="ann-title">Browser Buddy</div>
       <button class="ann-btn" id="ann-refresh">Refresh</button>
       <button class="ann-btn ann-danger" id="ann-clear">Clear</button>
     </div>
