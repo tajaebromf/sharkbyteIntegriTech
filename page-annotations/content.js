@@ -1,6 +1,6 @@
 // content.js
-// Minimal annotation UI + AI hookup + Minimize toggle (bottom-right)
-// Requires: background.js (MV3) and updated manifest with host_permissions for your backend.
+// Annotation UI + AI hookup + Text highlighting with robust text-quote anchoring
+// This uses text-based anchoring instead of fragile XPath
 
 (() => {
   if (window.__annotation_injected) return;
@@ -9,6 +9,7 @@
   // ---------- Storage helpers ----------
   const keyForPage = () => `annotations|${location.href}`;
   const MIN_KEY = `annotations|minimized|${location.href}`;
+  const HIGHLIGHTS_KEY = `highlights|${location.href}`;
 
   function getAnnotations() {
     try {
@@ -37,6 +38,31 @@
     }
   }
 
+  function getHighlights() {
+    try {
+      return JSON.parse(localStorage.getItem(HIGHLIGHTS_KEY) || "[]");
+    } catch (e) {
+      console.error("[highlights] parse error", e);
+      return [];
+    }
+  }
+
+  function setHighlights(highlights) {
+    try {
+      localStorage.setItem(HIGHLIGHTS_KEY, JSON.stringify(highlights));
+    } catch (e) {
+      console.error("[highlights] set error", e);
+    }
+  }
+
+  function clearHighlights() {
+    try {
+      localStorage.removeItem(HIGHLIGHTS_KEY);
+    } catch (e) {
+      console.error("[highlights] clear error", e);
+    }
+  }
+
   function getMinimized() {
     try { return localStorage.getItem(MIN_KEY) === "1"; } catch { return false; }
   }
@@ -61,9 +87,305 @@
     try { return String(window.getSelection?.().toString() || ""); } catch { return ""; }
   }
 
-  // Ask background to screenshot + call backend, return {ok, result|error}
-  // This function sends a message to the background script which then takes a screenshot
-  // and sends it to the backend API for AI processing
+  let highlightColor = '#ffff00';
+
+  // ---------- Text Quote Anchoring System ----------
+  // This is a simplified implementation of the text-quote anchoring strategy
+  // Similar to what Hypothesis and Chrome's "link to text" use
+
+  /**
+   * Extract text content from a node and its descendants
+   */
+  function getTextContent(node) {
+    const walker = document.createTreeWalker(
+      node,
+      NodeFilter.SHOW_TEXT,
+      null,
+      false
+    );
+    
+    let text = '';
+    let currentNode;
+    while (currentNode = walker.nextNode()) {
+      text += currentNode.textContent;
+    }
+    return text;
+  }
+
+  /**
+   * Get surrounding text context for a range
+   */
+  function getContext(range, contextLength = 32) {
+    const root = document.body;
+    const rootText = getTextContent(root);
+    
+    // Find the exact text in the full document
+    const exactText = range.toString();
+    
+    // Create a temporary range to get position in document
+    const tempRange = document.createRange();
+    tempRange.selectNodeContents(root);
+    tempRange.setEnd(range.startContainer, range.startOffset);
+    const textBefore = tempRange.toString();
+    
+    // Get prefix and suffix
+    const startPos = textBefore.length;
+    const endPos = startPos + exactText.length;
+    
+    const prefix = rootText.substring(Math.max(0, startPos - contextLength), startPos);
+    const suffix = rootText.substring(endPos, Math.min(rootText.length, endPos + contextLength));
+    
+    return { prefix, suffix };
+  }
+
+  /**
+   * Create a text quote anchor from a range
+   */
+  function createTextQuoteAnchor(range) {
+    const exact = range.toString();
+    const { prefix, suffix } = getContext(range);
+    
+    return {
+      type: 'TextQuoteSelector',
+      exact,
+      prefix,
+      suffix
+    };
+  }
+
+  /**
+   * Find text in document using exact match with context
+   */
+  function findTextWithContext(exact, prefix, suffix) {
+    const root = document.body;
+    const fullText = getTextContent(root);
+    
+    // Try to find with full context first
+    const searchText = prefix + exact + suffix;
+    let startIndex = fullText.indexOf(searchText);
+    
+    if (startIndex !== -1) {
+      startIndex += prefix.length;
+      return { startIndex, endIndex: startIndex + exact.length };
+    }
+    
+    // Fall back to just exact match
+    startIndex = fullText.indexOf(exact);
+    if (startIndex !== -1) {
+      return { startIndex, endIndex: startIndex + exact.length };
+    }
+    
+    // Fuzzy match as last resort
+    const words = exact.split(/\s+/).filter(w => w.length > 3);
+    if (words.length > 0) {
+      const firstWord = words[0];
+      startIndex = fullText.indexOf(firstWord);
+      if (startIndex !== -1) {
+        // Try to find approximate match
+        const endIndex = startIndex + exact.length;
+        if (endIndex <= fullText.length) {
+          return { startIndex, endIndex };
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Convert text position to DOM Range
+   */
+  function textPositionToRange(startIndex, endIndex) {
+    const root = document.body;
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_TEXT,
+      null,
+      false
+    );
+    
+    let currentPos = 0;
+    let startNode = null;
+    let startOffset = 0;
+    let endNode = null;
+    let endOffset = 0;
+    
+    let node;
+    while (node = walker.nextNode()) {
+      const nodeLength = node.textContent.length;
+      const nodeEnd = currentPos + nodeLength;
+      
+      // Find start
+      if (startNode === null && startIndex >= currentPos && startIndex <= nodeEnd) {
+        startNode = node;
+        startOffset = startIndex - currentPos;
+      }
+      
+      // Find end
+      if (endIndex >= currentPos && endIndex <= nodeEnd) {
+        endNode = node;
+        endOffset = endIndex - currentPos;
+        break;
+      }
+      
+      currentPos = nodeEnd;
+    }
+    
+    if (!startNode || !endNode) {
+      return null;
+    }
+    
+    const range = document.createRange();
+    try {
+      range.setStart(startNode, Math.min(startOffset, startNode.textContent.length));
+      range.setEnd(endNode, Math.min(endOffset, endNode.textContent.length));
+      return range;
+    } catch (e) {
+      console.error("[highlights] Failed to create range", e);
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a text quote anchor back to a Range
+   */
+  function resolveTextQuoteAnchor(anchor) {
+    const position = findTextWithContext(anchor.exact, anchor.prefix, anchor.suffix);
+    if (!position) {
+      console.warn("[highlights] Could not find text:", anchor.exact.substring(0, 50));
+      return null;
+    }
+    
+    return textPositionToRange(position.startIndex, position.endIndex);
+  }
+
+  // ---------- Highlight Management ----------
+
+  /**
+   * Save highlight with text-quote anchor
+   */
+  function saveHighlight(range, text) {
+    const anchor = createTextQuoteAnchor(range);
+    
+    const highlight = {
+      id: crypto.randomUUID(),
+      text: text,
+      anchor: anchor,
+      createdAt: nowIso()
+    };
+    
+    const highlights = getHighlights();
+    highlights.push(highlight);
+    setHighlights(highlights);
+    
+    return highlight;
+  }
+
+  /**
+   * Apply a highlight to the DOM
+   */
+  function applyHighlight(highlight) {
+    try {
+      const range = resolveTextQuoteAnchor(highlight.anchor);
+      
+      if (!range) {
+        console.warn("[highlights] Could not resolve anchor for highlight", highlight.id);
+        return false;
+      }
+      
+      // Check if this text is already highlighted
+      const existingHighlight = document.querySelector(`[data-highlight-id="${highlight.id}"]`);
+      if (existingHighlight) {
+        return true; // Already highlighted
+      }
+      
+      // Wrap the range in a highlight span
+      const span = document.createElement('mark');
+      span.className = 'annotation-highlight';
+      span.dataset.highlightId = highlight.id;
+      span.style.backgroundColor = highlightColor;
+      span.style.cursor = 'pointer';
+      span.title = `Highlighted: ${highlight.text.substring(0, 100)}...`;
+      
+      try {
+        range.surroundContents(span);
+        return true;
+      } catch (e) {
+        // If surroundContents fails (crosses element boundaries), use extraction method
+        try {
+          const contents = range.extractContents();
+          span.appendChild(contents);
+          range.insertNode(span);
+          return true;
+        } catch (e2) {
+          console.error("[highlights] Failed to apply highlight", highlight.id, e2);
+          return false;
+        }
+      }
+    } catch (e) {
+      console.error("[highlights] Failed to apply highlight", highlight.id, e);
+      return false;
+    }
+  }
+
+  /**
+   * Remove all highlight spans from the page
+   */
+  function clearHighlightSpans() {
+    const spans = document.querySelectorAll('.annotation-highlight');
+    spans.forEach(span => {
+      const parent = span.parentNode;
+      if (parent) {
+        while (span.firstChild) {
+          parent.insertBefore(span.firstChild, span);
+        }
+        parent.removeChild(span);
+        parent.normalize(); // Merge adjacent text nodes
+      }
+    });
+  }
+
+  /**
+   * Restore all saved highlights
+   */
+  function restoreHighlights() {
+    clearHighlightSpans();
+    const highlights = getHighlights();
+    let successCount = 0;
+    highlights.forEach(h => {
+      if (applyHighlight(h)) {
+        successCount++;
+      }
+    });
+    console.log(`[highlights] Restored ${successCount}/${highlights.length} highlights`);
+  }
+
+  /**
+   * Highlight the current selection
+   */
+  function highlightSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return null;
+    }
+    
+    const range = selection.getRangeAt(0);
+    const text = selection.toString();
+    
+    // Save the highlight data
+    const highlight = saveHighlight(range, text);
+    
+    // Apply the highlight visually
+    applyHighlight(highlight);
+    
+    // Clear the selection
+    selection.removeAllRanges();
+    
+    return highlight;
+  }
+
+  // ---------- AI Integration ----------
+
   async function saveAnnotationAndAskAI({ comment, question, selectionText }) {
     return new Promise((resolve) => {
       try {
@@ -75,7 +397,6 @@
             selection: selectionText || ""
           },
           (response) => {
-            // Check if the extension context was invalidated (e.g., extension was reloaded)
             if (chrome.runtime.lastError) {
               const errorMessage = chrome.runtime.lastError.message;
               if (errorMessage.includes("Extension context invalidated") || 
@@ -93,24 +414,20 @@
               return;
             }
             
-            // Check if we got a response
             if (!response) {
               resolve({ ok: false, error: "No response from background script." });
               return;
             }
             
-            // Return the response from the background script
             resolve(response);
           }
         );
       } catch (error) {
-        // Catch any synchronous errors that might occur
         resolve({ ok: false, error: `Failed to send message: ${String(error)}` });
       }
     });
   }
 
-  // Core save: persist locally immediately, then enrich with AI results
   async function saveAnnotation(a) {
     const all = getAnnotations();
     const idx = all.length;
@@ -121,7 +438,7 @@
       highlightedText: a.highlightedText || "",
       comment: a.comment || "",
       createdAt: nowIso(),
-      status: "processing", // processing | done | error
+      status: "processing",
       tldr: null,
       answer: null,
       error: null
@@ -131,22 +448,19 @@
     setAnnotations(all);
     renderList();
 
-    // Show the "thinking" image while Gemini is processing the request
     showThinkingState();
 
-    // Kick off AI call
     const resp = await saveAnnotationAndAskAI({
       comment: record.comment,
       question: record.comment,
       selectionText: record.highlightedText
     });
 
-    // Restore the normal button image after AI processing completes
     restoreNormalButtonState();
 
     const latest = getAnnotations();
     const current = latest[idx];
-    if (!current) return; // page reload, etc.
+    if (!current) return;
 
     if (!resp?.ok) {
       current.status = "error";
@@ -166,6 +480,14 @@
   // ---------- UI injection ----------
   const style = document.createElement("style");
   style.textContent = `
+    .annotation-highlight {
+      background-color: ${highlightColor};
+      cursor: pointer;
+      transition: background-color 0.2s ease;
+    }
+    .annotation-highlight:hover {
+      background-color: #ffeb3b;
+    }
     .annotation-sidebar {
       position: fixed;
       top: 16px;
@@ -186,7 +508,7 @@
     .annotation-sidebar.ann-min {
       transform: translateX(calc(100% + 24px));
       opacity: 0.6;
-      pointer-events: none; /* panel content not interactive when minimized */
+      pointer-events: none;
     }
     .ann-head {
       display: flex; align-items: center; gap: 8px;
@@ -219,7 +541,6 @@
     .ann-danger { border-color:#643; background:#2a0f0f; }
     .ann-danger:hover { background:#361212; }
 
-    /* Floating minimize / expand button (bottom-right) */
     .ann-fab {
       position: fixed;
       right: 16px;
@@ -271,6 +592,7 @@
       </div>
       <div class="ann-actions">
         <button class="ann-btn" id="ann-save">Save</button>
+        <button class="ann-btn" id="ann-highlight">Highlight</button>
       </div>
       <hr class="ann-hr"/>
       <div style="font-weight:600;">Saved</div>
@@ -279,74 +601,39 @@
   `;
   document.documentElement.appendChild(root);
 
-  // Create the toggle button that appears in the bottom-right corner
-  // This button lets users minimize/expand the annotation sidebar
   const toggleButton = document.createElement("button");
   toggleButton.className = "ann-fab";
   toggleButton.setAttribute("type", "button");
   toggleButton.setAttribute("title", "Toggle Annotations");
   toggleButton.setAttribute("aria-pressed", getMinimized() ? "true" : "false");
   
-  // Create the image element that will display inside the toggle button
-  // This image changes based on whether the sidebar is minimized or expanded
   const toggleButtonImage = document.createElement("img");
   toggleButtonImage.alt = "Toggle Annotations";
   
-  // Get the URL to the image file from the extension's resources
-  // chrome.runtime.getURL converts a relative path to a full extension URL
   const imagePathWhenSidebarIsOpen = chrome.runtime.getURL("images/Sam-Speaks.png");
   const imagePathWhenSidebarIsMinimized = chrome.runtime.getURL("images/Sam-Sleep.png");
   const imagePathWhenThinking = chrome.runtime.getURL("images/Sam-thinks.png");
   
-  // Log the image paths to help debug if images aren't loading
-  console.log("[Annotations] Image paths:", {
-    open: imagePathWhenSidebarIsOpen,
-    minimized: imagePathWhenSidebarIsMinimized,
-    thinking: imagePathWhenThinking
-  });
-  
-  // Set the initial image (when sidebar is open, show the "sleep" image)
   toggleButtonImage.src = imagePathWhenSidebarIsOpen;
-  
-  // Verify the image loads successfully
-  toggleButtonImage.onload = function() {
-    console.log("[Annotations] Toggle button image loaded successfully:", this.src);
-  };
-  
-  // If image fails to load, log an error to help debug
-  toggleButtonImage.onerror = function() {
-    console.error("[Annotations] Failed to load toggle button image:", this.src);
-    console.error("[Annotations] Make sure the extension is reloaded and the image path is correct");
-  };
-  
-  // Add the image to the button, then add the button to the page
   toggleButton.appendChild(toggleButtonImage);
   document.documentElement.appendChild(toggleButton);
 
-  // Function to update the UI when the sidebar is minimized or expanded
-  // This changes the sidebar visibility and updates the button's image
   function updateSidebarMinimizedState(isMinimized) {
     if (isMinimized) {
-      // Sidebar is minimized: hide it off-screen and show "speaks" image (user can click to expand)
       root.classList.add("ann-min");
       toggleButton.setAttribute("aria-pressed", "true");
       toggleButtonImage.src = imagePathWhenSidebarIsMinimized;
     } else {
-      // Sidebar is open: show it and display "sleep" image (user can click to minimize)
       root.classList.remove("ann-min");
       toggleButton.setAttribute("aria-pressed", "false");
       toggleButtonImage.src = imagePathWhenSidebarIsOpen;
     }
   }
   
-  // Function to show the "thinking" image when AI is processing
-  // This is called when the user saves an annotation and Gemini is generating a response
   function showThinkingState() {
     toggleButtonImage.src = imagePathWhenThinking;
   }
   
-  // Function to restore the normal button image after AI processing completes
-  // This restores the image based on whether the sidebar is minimized or open
   function restoreNormalButtonState() {
     const isCurrentlyMinimized = getMinimized();
     if (isCurrentlyMinimized) {
@@ -356,7 +643,6 @@
     }
   }
   
-  // Apply the current minimized state when the page loads
   updateSidebarMinimizedState(getMinimized());
 
   // ---------- UI wiring ----------
@@ -365,10 +651,16 @@
   const commentEl = $("#ann-comment");
   const listEl = $("#ann-list");
 
-  $("#ann-refresh").addEventListener("click", renderList);
+  $("#ann-refresh").addEventListener("click", () => {
+    restoreHighlights();
+    renderList();
+  });
+
   $("#ann-clear").addEventListener("click", () => {
-    if (confirm("Clear all annotations for this page?")) {
+    if (confirm("Clear all annotations and highlights for this page?")) {
       clearAnnotations();
+      clearHighlights();
+      clearHighlightSpans();
       renderList();
     }
   });
@@ -384,20 +676,28 @@
     await saveAnnotation({ highlightedText, comment });
   });
 
-  // When user clicks the toggle button, flip the minimized state
+  $("#ann-highlight").addEventListener("click", () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      alert("Please select some text to highlight.");
+      return;
+    }
+    
+    highlightSelection();
+    alert("Text highlighted! It will remain highlighted on this page.");
+  });
+
   toggleButton.addEventListener("click", () => {
     const newMinimizedState = !getMinimized();
     setMinimized(newMinimizedState);
     updateSidebarMinimizedState(newMinimizedState);
   });
 
-  // Keep the selection box in sync when user selects text on page
   document.addEventListener("selectionchange", () => {
     const s = getSelectionText();
     if (s) selEl.value = s;
   });
 
-  // Re-render when storage changes (same page)
   window.addEventListener("annotationsUpdated", () => renderList());
 
   // ---------- Render ----------
@@ -443,6 +743,31 @@
     }
   }
 
-  // Initial render
+  // Initial render and restore highlights
   renderList();
+  
+  // Restore highlights after a short delay to ensure DOM is ready
+  setTimeout(() => {
+    restoreHighlights();
+  }, 100);
+  
+  // Re-apply highlights when the page content changes (for dynamic sites)
+  const observer = new MutationObserver(() => {
+    clearTimeout(observer.timer);
+    observer.timer = setTimeout(() => {
+      const highlights = getHighlights();
+      const existingHighlights = document.querySelectorAll('.annotation-highlight');
+      
+      // Only restore if we have saved highlights but fewer visible ones
+      if (highlights.length > 0 && existingHighlights.length < highlights.length) {
+        console.log("[highlights] DOM changed, restoring highlights");
+        restoreHighlights();
+      }
+    }, 1000); // Increased debounce time
+  });
+  
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 })();
