@@ -1,8 +1,8 @@
-#Requirements: 
+# Requirements: 
 Python 3.11 or higher
 Gemini API Key
 
-#Running the FastAPI app (Windows PowerShell)
+# Running the FastAPI app (Windows PowerShell)
 1) Create a virtual environment (optional but recommended):
 
    python -m venv .venv
@@ -18,7 +18,7 @@ Gemini API Key
 
 6) Run the app with uvicorn:
 
-   # development with auto-reload
+      development with auto-reload
    uvicorn app:app --reload --host 127.0.0.1 --port 8000
 
 7) API docs
